@@ -365,6 +365,7 @@ class FeishuAdapterSettings:
     encrypt_key: str
     verification_token: str
     group_policy: str
+    require_mention: bool
     allowed_group_users: frozenset[str]
     # Bot's own open_id (app-scoped) — returned by /bot/v3/info.  Used only for
     # @mention matching: Feishu puts this value in mentions[].id.open_id when
@@ -500,6 +501,23 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return default
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -1405,6 +1423,10 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Default group policy (for groups not in group_rules)
         default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
+        require_mention = _coerce_bool(
+            extra.get("require_mention"),
+            default=_coerce_bool(os.getenv("FEISHU_REQUIRE_MENTION"), default=True),
+        )
 
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
@@ -1416,6 +1438,7 @@ class FeishuAdapter(BasePlatformAdapter):
             encrypt_key=os.getenv("FEISHU_ENCRYPT_KEY", "").strip(),
             verification_token=os.getenv("FEISHU_VERIFICATION_TOKEN", "").strip(),
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            require_mention=require_mention,
             allowed_group_users=frozenset(
                 item.strip()
                 for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
@@ -1472,6 +1495,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._encrypt_key = settings.encrypt_key
         self._verification_token = settings.verification_token
         self._group_policy = settings.group_policy
+        self._require_mention = settings.require_mention
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
@@ -2258,7 +2282,14 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_type = getattr(message, "chat_type", "p2p")
         chat_id = getattr(message, "chat_id", "") or ""
         if chat_type != "p2p" and not self._should_accept_group_message(message, sender_id, chat_id):
-            logger.debug("[Feishu] Dropping group message that failed mention/policy gate: %s", message_id)
+            logger.info(
+                "[Feishu] Group message gated: id=%s chat=%s require_mention=%s thread_id=%s mentions=%s",
+                message_id,
+                chat_id,
+                self._require_mention,
+                getattr(message, "thread_id", None) or "",
+                len(getattr(message, "mentions", None) or []),
+            )
             return
         await self._process_inbound_message(
             data=data,
@@ -3679,10 +3710,10 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Apply sender policy first, then optionally require an explicit @mention."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
-        if os.getenv("FEISHU_REQUIRE_MENTION", "true").strip().lower() in ("false", "0", "no"):
+        if not self._require_mention:
             return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""

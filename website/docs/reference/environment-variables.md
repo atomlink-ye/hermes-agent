@@ -265,6 +265,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `FEISHU_CONNECTION_MODE` | `websocket` (recommended) or `webhook`. Default: `websocket` |
 | `FEISHU_ENCRYPT_KEY` | Optional encryption key for webhook mode |
 | `FEISHU_VERIFICATION_TOKEN` | Optional verification token for webhook mode |
+| `FEISHU_GROUP_POLICY` | Group access policy: `open`, `allowlist`, or `disabled` |
+| `FEISHU_REQUIRE_MENTION` | When `true` (default), group chats require `@mention`; set to `false` to reply without mentions |
 | `FEISHU_ALLOWED_USERS` | Comma-separated Feishu user IDs allowed to message the bot |
 | `FEISHU_HOME_CHANNEL` | Feishu chat ID for cron delivery and notifications |
 | `WECOM_BOT_ID` | WeCom AI Bot ID from admin console |

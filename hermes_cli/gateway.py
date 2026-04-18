@@ -3231,14 +3231,21 @@ def _setup_feishu():
     group_choices = [
         "Respond only when @mentioned in groups (recommended)",
         "Disable group chats",
+        "Respond to all group messages (no @mention required)",
     ]
     group_idx = prompt_choice("  How should group chats be handled?", group_choices, 0)
     if group_idx == 0:
         save_env_value("FEISHU_GROUP_POLICY", "open")
+        save_env_value("FEISHU_REQUIRE_MENTION", "true")
         print_info("  Group chats enabled (bot must be @mentioned).")
-    else:
+    elif group_idx == 1:
         save_env_value("FEISHU_GROUP_POLICY", "disabled")
+        save_env_value("FEISHU_REQUIRE_MENTION", "true")
         print_info("  Group chats disabled.")
+    else:
+        save_env_value("FEISHU_GROUP_POLICY", "open")
+        save_env_value("FEISHU_REQUIRE_MENTION", "false")
+        print_warning("  Group chats enabled without @mention gating.")
 
     # ── Home channel ──
     print()

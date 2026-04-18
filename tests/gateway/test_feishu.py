@@ -778,6 +778,34 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertFalse(adapter._should_accept_group_message(message_with_mention, sender_id, ""))
 
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_group_message_can_skip_mentions_when_disabled_in_platform_config(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"require_mention": False}))
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+
+        self.assertTrue(
+            adapter._should_accept_group_message(SimpleNamespace(mentions=[]), sender_id, "")
+        )
+
+    @patch.dict(
+        os.environ,
+        {"FEISHU_GROUP_POLICY": "open", "FEISHU_REQUIRE_MENTION": "false"},
+        clear=True,
+    )
+    def test_group_message_can_skip_mentions_when_disabled_via_env(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+
+        self.assertTrue(
+            adapter._should_accept_group_message(SimpleNamespace(mentions=[]), sender_id, "")
+        )
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_with_other_user_mention_is_rejected_when_bot_identity_unknown(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

@@ -196,10 +196,11 @@ class TestSetupFeishuGroupPolicy:
                 "open_id": None, "bot_name": None, "bot_open_id": None,
             },
             prompt_yes_no_responses=[True],
-            prompt_choice_responses=[0, 0, 0],  # method=QR, dm=pairing, group=open
+            prompt_choice_responses=[0, 0, 0],  # method=QR, dm=pairing, group=open-with-mention
             prompt_responses=[""],
         )
         assert env["FEISHU_GROUP_POLICY"] == "open"
+        assert env["FEISHU_REQUIRE_MENTION"] == "true"
 
     def test_disabled(self):
         env = _run_setup_feishu(
@@ -212,6 +213,20 @@ class TestSetupFeishuGroupPolicy:
             prompt_responses=[""],
         )
         assert env["FEISHU_GROUP_POLICY"] == "disabled"
+        assert env["FEISHU_REQUIRE_MENTION"] == "true"
+
+    def test_open_without_mentions_sets_require_mention_false(self):
+        env = _run_setup_feishu(
+            qr_result={
+                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
+                "open_id": None, "bot_name": None, "bot_open_id": None,
+            },
+            prompt_yes_no_responses=[True],
+            prompt_choice_responses=[0, 0, 2],  # method=QR, dm=pairing, group=open-without-mention
+            prompt_responses=[""],
+        )
+        assert env["FEISHU_GROUP_POLICY"] == "open"
+        assert env["FEISHU_REQUIRE_MENTION"] == "false"
 
 
 # ---------------------------------------------------------------------------

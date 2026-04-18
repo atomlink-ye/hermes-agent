@@ -18,7 +18,7 @@ The integration supports both connection modes:
 | Context | Behavior |
 |---------|----------|
 | Direct messages | Hermes responds to every message. |
-| Group chats | Hermes responds only when the bot is @mentioned in the chat. |
+| Group chats | Hermes responds when @mentioned by default. Set `FEISHU_REQUIRE_MENTION=false` to reply to normal group messages too. |
 | Shared group chats | By default, session history is isolated per user inside a shared chat. |
 
 This shared-chat behavior is controlled by `config.yaml`:
@@ -111,9 +111,12 @@ Add the following to `~/.hermes/.env`:
 
 ```bash
 FEISHU_APP_ID=cli_xxx
-FEISHU_APP_SECRET=secret_xxx
+FEISHU_APP_SECRET=***
 FEISHU_DOMAIN=feishu
 FEISHU_CONNECTION_MODE=websocket
+
+# Optional group-chat behavior
+FEISHU_REQUIRE_MENTION=true   # set to false to reply without @mentions in groups
 
 # Optional but strongly recommended
 FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
@@ -197,11 +200,27 @@ FEISHU_GROUP_POLICY=allowlist   # default
 
 | Value | Behavior |
 |-------|----------|
-| `open` | Hermes responds to @mentions from any user in any group. |
-| `allowlist` | Hermes only responds to @mentions from users listed in `FEISHU_ALLOWED_USERS`. |
+| `open` | Hermes accepts group messages from any user in any group. |
+| `allowlist` | Hermes only accepts group messages from users listed in `FEISHU_ALLOWED_USERS`. |
 | `disabled` | Hermes ignores all group messages entirely. |
 
-In all modes, the bot must be explicitly @mentioned (or @all) in the group before the message is processed. Direct messages bypass this gate.
+Mention behavior is controlled separately:
+
+```bash
+FEISHU_REQUIRE_MENTION=true   # default
+```
+
+- `true` — group messages must explicitly `@mention` the bot (or use `@all`)
+- `false` — accepted group messages are processed even without an `@mention`
+
+You can also set this in `config.yaml`:
+
+```yaml
+feishu:
+  require_mention: false
+```
+
+Direct messages bypass this gate.
 
 ### Bot Identity for @Mention Gating
 
