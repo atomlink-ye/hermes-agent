@@ -56,8 +56,8 @@ def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
     return runner
 
 
-def _watcher_dict_with_notify():
-    return {
+def _watcher_dict_with_notify(message_id=""):
+    watcher = {
         "session_id": "proc_test_internal",
         "check_interval": 0,
         "session_key": "agent:main:discord:dm:123",
@@ -66,6 +66,9 @@ def _watcher_dict_with_notify():
         "thread_id": "",
         "notify_on_complete": True,
     }
+    if message_id:
+        watcher["message_id"] = message_id
+    return watcher
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +231,32 @@ async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path)
     event = adapter.handle_message.await_args.args[0]
     assert event.source.user_id == "user-42"
     assert event.source.user_name == "alice"
+
+
+@pytest.mark.asyncio
+async def test_notify_on_complete_preserves_origin_message_id(monkeypatch, tmp_path):
+    """Synthetic completion events should keep the original message id for threaded replies."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path)
+    adapter = runner.adapters[Platform.DISCORD]
+
+    await runner._run_process_watcher(_watcher_dict_with_notify(message_id="msg-origin"))
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.message_id == "msg-origin"
 
 
 @pytest.mark.asyncio

@@ -4031,6 +4031,12 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+
+        # Preserve the originating platform message id on the source object so
+        # background-process watchers and other side-channel sends can reply
+        # under the same Feishu thread anchor.
+        if getattr(event, "message_id", None):
+            setattr(source, "event_message_id", event.message_id)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -8215,6 +8221,7 @@ class GatewayRunner:
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
+            message_id=str(getattr(context.source, "event_message_id", "") or ""),
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
@@ -8466,6 +8473,7 @@ class GatewayRunner:
                 text=synth_text,
                 message_type=MessageType.TEXT,
                 source=source,
+                message_id=str(evt.get("message_id") or "").strip() or None,
                 internal=True,
             )
             logger.info(
@@ -8499,6 +8507,7 @@ class GatewayRunner:
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
+        message_id = watcher.get("message_id", "")
         user_id = watcher.get("user_id", "")
         user_name = watcher.get("user_name", "")
         agent_notify = watcher.get("notify_on_complete", False)
@@ -8549,6 +8558,7 @@ class GatewayRunner:
                         "platform": platform_name,
                         "chat_id": chat_id,
                         "thread_id": thread_id,
+                        "message_id": message_id,
                         "user_id": user_id,
                         "user_name": user_name,
                     })
@@ -8570,6 +8580,7 @@ class GatewayRunner:
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
                                 source=source,
+                                message_id=str(message_id or "").strip() or None,
                                 internal=True,
                             )
                             logger.info(
@@ -8604,7 +8615,17 @@ class GatewayRunner:
                     if adapter and chat_id:
                         try:
                             send_meta = {"thread_id": thread_id} if thread_id else None
-                            await adapter.send(chat_id, message_text, metadata=send_meta)
+                            send_reply_to = (
+                                str(message_id or "").strip() or None
+                                if platform_name == Platform.FEISHU.value and thread_id
+                                else None
+                            )
+                            await adapter.send(
+                                chat_id,
+                                message_text,
+                                reply_to=send_reply_to,
+                                metadata=send_meta,
+                            )
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
                 break
@@ -8625,7 +8646,17 @@ class GatewayRunner:
                 if adapter and chat_id:
                     try:
                         send_meta = {"thread_id": thread_id} if thread_id else None
-                        await adapter.send(chat_id, message_text, metadata=send_meta)
+                        send_reply_to = (
+                            str(message_id or "").strip() or None
+                            if platform_name == Platform.FEISHU.value and thread_id
+                            else None
+                        )
+                        await adapter.send(
+                            chat_id,
+                            message_text,
+                            reply_to=send_reply_to,
+                            metadata=send_meta,
+                        )
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
 

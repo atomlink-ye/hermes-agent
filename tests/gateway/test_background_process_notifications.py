@@ -50,15 +50,17 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     return runner
 
 
-def _watcher_dict(session_id="proc_test", thread_id=""):
+def _watcher_dict(session_id="proc_test", thread_id="", platform="telegram", message_id=""):
     d = {
         "session_id": session_id,
         "check_interval": 0,
-        "platform": "telegram",
+        "platform": platform,
         "chat_id": "123",
     }
     if thread_id:
         d["thread_id"] = thread_id
+    if message_id:
+        d["message_id"] = message_id
     return d
 
 
@@ -221,6 +223,59 @@ async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] == {"thread_id": "42"}
+
+
+@pytest.mark.asyncio
+async def test_feishu_threaded_completion_replies_to_origin_message(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.FEISHU] = adapter
+
+    await runner._run_process_watcher(
+        _watcher_dict(thread_id="omt_thread", platform="feishu", message_id="om_origin")
+    )
+
+    assert adapter.send.await_count == 1
+    _, kwargs = adapter.send.call_args
+    assert kwargs["metadata"] == {"thread_id": "omt_thread"}
+    assert kwargs["reply_to"] == "om_origin"
+
+
+@pytest.mark.asyncio
+async def test_feishu_threaded_running_update_replies_to_origin_message(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(output_buffer="building...\n", exited=False, exit_code=None),
+        None,
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.FEISHU] = adapter
+
+    await runner._run_process_watcher(
+        _watcher_dict(thread_id="omt_thread", platform="feishu", message_id="om_origin")
+    )
+
+    assert adapter.send.await_count == 1
+    _, kwargs = adapter.send.call_args
+    assert kwargs["metadata"] == {"thread_id": "omt_thread"}
+    assert kwargs["reply_to"] == "om_origin"
 
 
 @pytest.mark.asyncio

@@ -1693,6 +1693,7 @@ def terminal_tool(
                     if _gw_platform:
                         _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
                         _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
+                        _gw_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
                         _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
                         _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
                         proc_session.watcher_platform = _gw_platform
@@ -1700,6 +1701,7 @@ def terminal_tool(
                         proc_session.watcher_user_id = _gw_user_id
                         proc_session.watcher_user_name = _gw_user_name
                         proc_session.watcher_thread_id = _gw_thread_id
+                        proc_session.watcher_message_id = _gw_message_id
 
                 # Mark for agent notification on completion
                 if notify_on_complete and background:
@@ -1720,6 +1722,7 @@ def terminal_tool(
                             "user_id": proc_session.watcher_user_id,
                             "user_name": proc_session.watcher_user_name,
                             "thread_id": proc_session.watcher_thread_id,
+                            "message_id": proc_session.watcher_message_id,
                             "notify_on_complete": True,
                         })
 
