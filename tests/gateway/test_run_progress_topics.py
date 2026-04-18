@@ -244,6 +244,49 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
 
 
+@pytest.mark.asyncio
+async def test_run_agent_feishu_progress_replies_inside_thread(monkeypatch, tmp_path):
+    """Feishu threaded tool progress should reply to the thread anchor message."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt_thread",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu-progress-thread",
+        session_key="agent:main:feishu:group:oc_chat:omt_thread",
+        event_message_id="om_origin",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.sent[0]["reply_to"] == "om_origin"
+    assert adapter.sent[0]["metadata"] == {"thread_id": "omt_thread"}
+    assert all(call["metadata"] == {"thread_id": "omt_thread"} for call in adapter.typing)
+
+
 # ---------------------------------------------------------------------------
 # Preview truncation tests (all/new mode respects tool_preview_length)
 # ---------------------------------------------------------------------------
