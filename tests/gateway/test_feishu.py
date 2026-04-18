@@ -394,6 +394,81 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_card_when_requested_via_metadata(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        async def _fake_send_with_retry(*, chat_id, msg_type, payload, reply_to, metadata):
+            captured["chat_id"] = chat_id
+            captured["msg_type"] = msg_type
+            captured["payload"] = payload
+            captured["reply_to"] = reply_to
+            captured["metadata"] = metadata
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card"))
+
+        adapter._client = object()
+        adapter._feishu_send_with_retry = _fake_send_with_retry
+
+        result = asyncio.run(
+            adapter.send(
+                chat_id="oc_chat",
+                content="**Streaming** reply",
+                metadata={"_feishu_message_style": "interactive_card"},
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card")
+        self.assertEqual(captured["msg_type"], "interactive")
+        self.assertEqual(captured["reply_to"], None)
+        payload = json.loads(captured["payload"])
+        self.assertEqual(payload["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload["elements"][0]["content"], "**Streaming** reply")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_keeps_interactive_card_style_for_cached_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._message_style_cache = {"om_progress": "interactive"}
+        captured = {}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["request"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content="**Still streaming**",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload["elements"][0]["content"], "**Still streaming**")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

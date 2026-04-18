@@ -528,6 +528,33 @@ async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_run_agent_feishu_streaming_marks_stream_messages_for_interactive_cards(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-feishu-streaming-card",
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id=None,
+        config_data={
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {"feishu": {"streaming": True}},
+            },
+            "streaming": {"enabled": True},
+        },
+    )
+
+    assert adapter.sent
+    assert all(
+        call["metadata"] == {"_feishu_message_style": "interactive_card"}
+        for call in adapter.sent
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
