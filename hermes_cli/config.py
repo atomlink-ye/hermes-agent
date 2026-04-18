@@ -599,7 +599,12 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
-        "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
+        "platforms": {
+            "feishu": {
+                "interim_assistant_messages": False,
+                "long_running_notifications": False,
+            },
+        },  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
     # Web dashboard settings
@@ -2649,6 +2654,38 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
+
+    # ── Version 18 → 19: keep Feishu concise by default ──
+    if current_ver < 19:
+        config = read_raw_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        platforms = display.get("platforms", {})
+        if not isinstance(platforms, dict):
+            platforms = {}
+        feishu_display = platforms.get("feishu", {})
+        if not isinstance(feishu_display, dict):
+            feishu_display = {}
+
+        changed = False
+        if "interim_assistant_messages" not in feishu_display:
+            feishu_display["interim_assistant_messages"] = False
+            changed = True
+        if "long_running_notifications" not in feishu_display:
+            feishu_display["long_running_notifications"] = False
+            changed = True
+
+        if changed:
+            platforms["feishu"] = feishu_display
+            display["platforms"] = platforms
+            config["display"] = display
+            save_config(config)
+            results["config_added"].append(
+                "display.platforms.feishu.{interim_assistant_messages,long_running_notifications}=false"
+            )
+            if not quiet:
+                print("  ✓ Added Feishu defaults: interim_assistant_messages=false, long_running_notifications=false")
 
     # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
     # The loader now requires plugins to appear in ``plugins.enabled`` before

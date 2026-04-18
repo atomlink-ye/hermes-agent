@@ -605,6 +605,7 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
+    _running_agent_sources: Dict[str, Any] = {}
     _busy_input_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
@@ -657,6 +658,7 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        self._running_agent_sources: Dict[str, SessionSource] = {}  # latest source per running session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -1687,60 +1689,76 @@ class GatewayRunner:
         msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set = set()
+        running_sources = getattr(self, "_running_agent_sources", {}) or {}
         for session_key in active:
-            source = None
-            try:
-                if getattr(self, "session_store", None) is not None:
-                    self.session_store._ensure_loaded()
-                    entry = self.session_store._entries.get(session_key)
-                    source = getattr(entry, "origin", None) if entry else None
-            except Exception as e:
-                logger.debug(
-                    "Failed to load session origin for shutdown notification %s: %s",
-                    session_key,
-                    e,
-                )
+            source = running_sources.get(session_key)
+            if source is None:
+                try:
+                    if getattr(self, "session_store", None) is not None:
+                        self.session_store._ensure_loaded()
+                        entry = self.session_store._entries.get(session_key)
+                        source = getattr(entry, "origin", None) if entry else None
+                except Exception as e:
+                    logger.debug(
+                        "Failed to load session origin for shutdown notification %s: %s",
+                        session_key,
+                        e,
+                    )
+            thread_id = None
 
             if source is not None:
-                platform_str = source.platform.value
+                platform = source.platform
+                platform_str = platform.value
                 chat_id = source.chat_id
                 thread_id = source.thread_id
+                reply_to = (
+                    getattr(source, "event_message_id", None)
+                    if platform == Platform.FEISHU and thread_id
+                    else None
+                )
             else:
-                # Fall back to parsing the session key when no persisted
-                # origin is available (legacy sessions/tests).
+                # Fallback for older sessions/tests that only populate
+                # _running_agents. Parsing cannot disambiguate group thread_id vs
+                # per-user suffix, so thread_id may be unavailable here.
                 _parsed = _parse_session_key(session_key)
                 if not _parsed:
                     continue
                 platform_str = _parsed["platform"]
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
+                try:
+                    platform = Platform(platform_str)
+                except Exception:
+                    continue
+                reply_to = None
 
-            # Deduplicate: one notification per chat, even if multiple
-            # sessions (different users/threads) share the same chat.
-            dedup_key = (platform_str, chat_id)
+            # Deduplicate shared non-thread chats, but keep threaded sessions
+            # isolated so each forum topic/thread gets its own notice.
+            dedup_key = (platform_str, chat_id, thread_id or "") if thread_id else (platform_str, chat_id)
             if dedup_key in notified:
                 continue
 
             try:
-                platform = Platform(platform_str)
                 adapter = self.adapters.get(platform)
                 if not adapter:
                     continue
 
-                # Include thread_id if present so the message lands in the
-                # correct forum topic / thread.
                 metadata = {"thread_id": thread_id} if thread_id else None
-
-                await adapter.send(chat_id, msg, metadata=metadata)
+                await adapter.send(chat_id, msg, reply_to=reply_to, metadata=metadata)
                 notified.add(dedup_key)
                 logger.info(
-                    "Sent shutdown notification to %s:%s",
-                    platform_str, chat_id,
+                    "Sent shutdown notification to %s:%s%s",
+                    platform_str,
+                    chat_id,
+                    f" thread={thread_id}" if thread_id else "",
                 )
             except Exception as e:
                 logger.debug(
-                    "Failed to send shutdown notification to %s:%s: %s",
-                    platform_str, chat_id, e,
+                    "Failed to send shutdown notification to %s:%s%s: %s",
+                    platform_str,
+                    chat_id,
+                    f" thread={thread_id}" if thread_id else "",
+                    e,
                 )
 
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
@@ -4100,9 +4118,16 @@ class GatewayRunner:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
                             pass
+                        _notice_metadata = getattr(event, 'metadata', None)
+                        _notice_reply_to = None
+                        if source.platform == Platform.FEISHU and source.thread_id:
+                            _notice_metadata = {"thread_id": source.thread_id}
+                            _notice_reply_to = event.message_id
                         await adapter.send(
-                            source.chat_id, notice,
-                            metadata=getattr(event, 'metadata', None),
+                            source.chat_id,
+                            notice,
+                            reply_to=_notice_reply_to,
+                            metadata=_notice_metadata,
                         )
             except Exception as e:
                 logger.debug("Auto-reset notification failed (non-fatal): %s", e)
@@ -8695,6 +8720,8 @@ class GatewayRunner:
             return
         self._running_agents.pop(session_key, None)
         self._running_agents_ts.pop(session_key, None)
+        if hasattr(self, "_running_agent_sources"):
+            self._running_agent_sources.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
 
@@ -9335,12 +9362,15 @@ class GatewayRunner:
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
+        _resolved_interim_messages = resolve_display_setting(
+            user_config,
+            platform_key,
+            "interim_assistant_messages",
+            True,
+        )
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
-            and is_truthy_value(
-                display_config.get("interim_assistant_messages"),
-                default=True,
-            )
+            and is_truthy_value(_resolved_interim_messages, default=True)
         )
         
         # Queue for progress messages (thread-safe)
@@ -10030,14 +10060,17 @@ class GatewayRunner:
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        _approval_kwargs = {
+                            "chat_id": _status_chat_id,
+                            "command": cmd,
+                            "session_key": _approval_session_key,
+                            "description": desc,
+                            "metadata": _status_thread_metadata,
+                        }
+                        if source.platform == Platform.FEISHU and _status_reply_to:
+                            _approval_kwargs["reply_to"] = _status_reply_to
                         _approval_result = asyncio.run_coroutine_threadsafe(
-                            _status_adapter.send_exec_approval(
-                                chat_id=_status_chat_id,
-                                command=cmd,
-                                session_key=_approval_session_key,
-                                description=desc,
-                                metadata=_status_thread_metadata,
-                            ),
+                            _status_adapter.send_exec_approval(**_approval_kwargs),
                             _loop_for_step,
                         ).result(timeout=15)
                         if _approval_result.success:
@@ -10289,6 +10322,10 @@ class GatewayRunner:
                 await asyncio.sleep(0.05)
             if session_key:
                 self._running_agents[session_key] = agent_holder[0]
+                if not hasattr(self, "_running_agent_sources"):
+                    self._running_agent_sources = {}
+                setattr(source, "event_message_id", event_message_id)
+                self._running_agent_sources[session_key] = source
                 if self._draining:
                     self._update_runtime_status("draining")
         
@@ -10347,13 +10384,23 @@ class GatewayRunner:
         # Config: agent.gateway_notify_interval in config.yaml, or
         # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 600s (10 min).
         # 0 = disable notifications.
+        _resolved_long_running_notifications = resolve_display_setting(
+            user_config,
+            platform_key,
+            "long_running_notifications",
+            True,
+        )
+        _long_running_notifications_enabled = is_truthy_value(
+            _resolved_long_running_notifications,
+            default=True,
+        )
         _NOTIFY_INTERVAL_RAW = float(os.getenv("HERMES_AGENT_NOTIFY_INTERVAL", 600))
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
         _notify_start = time.time()
 
         async def _notify_long_running():
-            if _NOTIFY_INTERVAL is None:
-                return  # Notifications disabled (gateway_notify_interval: 0)
+            if _NOTIFY_INTERVAL is None or not _long_running_notifications_enabled:
+                return  # Notifications disabled
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return
@@ -10459,7 +10506,8 @@ class GatewayRunner:
                         except Exception:
                             pass
                     # Staged warning: fire once before escalating to full timeout.
-                    if (not _warning_fired and _agent_warning is not None
+                    if (_long_running_notifications_enabled
+                            and not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):
                         _warning_fired = True
                         _warn_adapter = self.adapters.get(source.platform)

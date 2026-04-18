@@ -52,6 +52,7 @@ def make_restart_runner(
     runner._exit_code = None
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._running_agent_sources = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._pending_model_notes = {}

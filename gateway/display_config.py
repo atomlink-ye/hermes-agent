@@ -33,6 +33,8 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "show_reasoning": False,
+    "interim_assistant_messages": True,
+    "long_running_notifications": True,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
 }
@@ -82,7 +84,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "slack":           _TIER_MEDIUM,
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
-    "feishu":          _TIER_MEDIUM,
+    "feishu":          {**_TIER_MEDIUM, "interim_assistant_messages": False, "long_running_notifications": False},
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
@@ -182,7 +184,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in ("show_reasoning", "streaming"):
+    if setting in ("show_reasoning", "streaming", "interim_assistant_messages", "long_running_notifications"):
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return bool(value)

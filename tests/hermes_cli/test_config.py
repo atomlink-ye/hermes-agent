@@ -596,6 +596,7 @@ class TestInterimAssistantMessageConfig:
 
     def test_default_config_enables_interim_assistant_messages(self):
         assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
+        assert DEFAULT_CONFIG["display"]["platforms"]["feishu"]["interim_assistant_messages"] is False
 
     def test_migrate_to_v15_adds_interim_assistant_message_gate(self, tmp_path):
         config_path = tmp_path / "config.yaml"
@@ -612,6 +613,7 @@ class TestInterimAssistantMessageConfig:
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["display"]["tool_progress"] == "off"
         assert raw["display"]["interim_assistant_messages"] is True
+        assert raw["display"]["platforms"]["feishu"]["interim_assistant_messages"] is False
 
 
 class TestDiscordChannelPromptsConfig:

@@ -5,19 +5,23 @@ Verifies that:
 - SessionEntry captures auto_reset_reason
 - SessionResetPolicy.notify controls whether notifications are sent
 - notify_exclude_platforms skips notifications for excluded platforms
+- Feishu threaded reset notices stay anchored to the triggering message
 """
 
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.config import (
     GatewayConfig,
     Platform,
     PlatformConfig,
     SessionResetPolicy,
 )
+from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
@@ -205,3 +209,82 @@ class TestResetPolicyNotify:
         assert restored.notify == original.notify
         assert restored.notify_exclude_platforms == original.notify_exclude_platforms
         assert restored.mode == original.mode
+
+
+@pytest.mark.asyncio
+async def test_feishu_threaded_auto_reset_notice_replies_to_trigger_message(monkeypatch):
+    adapter = MagicMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="reset-1"))
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.FEISHU: adapter}
+    runner.config = GatewayConfig(
+        platforms={Platform.FEISHU: PlatformConfig(enabled=True, token="***")}
+    )
+    runner._voice_mode = {}
+    runner._session_model_overrides = {}
+    runner._pending_model_notes = {}
+    runner._background_tasks = set()
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._session_db = None
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._format_session_info = lambda: ""
+    runner._set_session_env = lambda _context: []
+    runner._clear_session_env = lambda _tokens: None
+    runner._prepare_inbound_message_text = AsyncMock(return_value="hello")
+    runner._run_agent = AsyncMock(return_value={"final_response": "done", "messages": [], "api_calls": 0})
+    runner._clear_restart_failure_count = MagicMock()
+    runner._should_send_voice_reply = lambda *_args, **_kwargs: False
+    runner._deliver_media_from_response = AsyncMock()
+
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt_thread",
+        user_id="u1",
+    )
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-reset",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.FEISHU,
+        chat_type="group",
+        was_auto_reset=True,
+        auto_reset_reason="suspended",
+        reset_had_activity=True,
+    )
+
+    runner.session_store = MagicMock()
+    runner.session_store.config = GatewayConfig(
+        default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=60, notify=True),
+    )
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = []
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+
+    monkeypatch.setenv("FEISHU_HOME_CHANNEL", "oc_home")
+
+    event = MessageEvent(
+        text="resume",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="om_origin",
+    )
+
+    response = await runner._handle_message_with_agent(event, source, "quick-reset")
+
+    assert response == "done"
+    notice_call = adapter.send.await_args_list[0]
+    assert notice_call.args[0] == "oc_chat"
+    assert "Session automatically reset" in notice_call.args[1]
+    assert notice_call.kwargs["reply_to"] == "om_origin"
+    assert notice_call.kwargs["metadata"] == {"thread_id": "omt_thread"}

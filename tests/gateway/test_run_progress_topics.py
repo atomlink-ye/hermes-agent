@@ -689,6 +689,31 @@ async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_run_agent_feishu_platform_override_suppresses_interim_commentary(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-feishu-platform-off",
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt_thread",
+        event_message_id="om_origin",
+        config_data={
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {"feishu": {"interim_assistant_messages": False}},
+            },
+            "streaming": {"enabled": True},
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_tool_progress_does_not_control_interim_commentary(monkeypatch, tmp_path):
     """tool_progress=all with interim_assistant_messages=false should not surface commentary."""
     adapter, result = await _run_with_agent(
@@ -866,6 +891,31 @@ async def test_run_agent_feishu_background_review_replies_inside_thread_after_re
 
 
 @pytest.mark.asyncio
+async def test_run_agent_feishu_still_working_notifications_can_be_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SlowStillWorkingAgent,
+        session_id="sess-feishu-still-working-suppressed",
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt_thread",
+        event_message_id="om_origin",
+        config_data={
+            "display": {
+                "platforms": {"feishu": {"long_running_notifications": False}},
+            },
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert not any("Still working..." in call["content"] for call in adapter.sent)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_feishu_still_working_replies_inside_thread(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
 
@@ -879,6 +929,11 @@ async def test_run_agent_feishu_still_working_replies_inside_thread(monkeypatch,
         chat_type="group",
         thread_id="omt_thread",
         event_message_id="om_origin",
+        config_data={
+            "display": {
+                "platforms": {"feishu": {"long_running_notifications": True}},
+            },
+        },
     )
 
     assert result["final_response"] == "done"

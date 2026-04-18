@@ -154,6 +154,31 @@ class TestFeishuExecApproval:
         assert state["chat_id"] == "oc_12345"
 
     @pytest.mark.asyncio
+    async def test_replies_inside_thread_when_reply_to_is_provided(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_approval"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            await adapter.send_exec_approval(
+                chat_id="oc_12345",
+                command="rm -rf /important",
+                session_key="agent:main:feishu:group:oc_12345:omt_thread",
+                description="dangerous deletion",
+                reply_to="om_origin",
+                metadata={"thread_id": "omt_thread"},
+            )
+
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["reply_to"] == "om_origin"
+        assert kwargs["metadata"] == {"thread_id": "omt_thread"}
+
+    @pytest.mark.asyncio
     async def test_not_connected(self):
         adapter = _make_adapter()
         adapter._client = None

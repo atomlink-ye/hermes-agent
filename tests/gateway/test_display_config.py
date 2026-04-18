@@ -219,6 +219,15 @@ class TestPlatformDefaults:
 
         assert resolve_display_setting({}, "telegram", "streaming") is None
 
+    def test_feishu_defaults_hide_interim_assistant_messages(self):
+        """Feishu should default to concise replies without separate commentary bubbles."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "feishu", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "feishu", "long_running_notifications") is False
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is True
+        assert resolve_display_setting({}, "telegram", "long_running_notifications") is True
+
 
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms

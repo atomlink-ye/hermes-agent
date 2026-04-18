@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
+from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
@@ -208,6 +209,37 @@ async def test_shutdown_notification_deduplicates_per_chat():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_sends_one_message_per_feishu_topic_when_sources_are_known():
+    """Feishu group topics should each get their own shutdown notice."""
+    runner, adapter = make_restart_runner()
+    runner.adapters = {Platform.FEISHU: adapter}
+    adapter.send = AsyncMock(return_value=MagicMock(success=True, message_id="1"))
+    runner._running_agent_sources = {
+        "agent:main:feishu:group:oc_chat:omt_a": make_restart_source(chat_id="oc_chat", chat_type="group"),
+        "agent:main:feishu:group:oc_chat:omt_b": make_restart_source(chat_id="oc_chat", chat_type="group"),
+    }
+    runner._running_agent_sources["agent:main:feishu:group:oc_chat:omt_a"].platform = Platform.FEISHU
+    runner._running_agent_sources["agent:main:feishu:group:oc_chat:omt_a"].thread_id = "omt_a"
+    runner._running_agent_sources["agent:main:feishu:group:oc_chat:omt_a"].event_message_id = "om_a"
+    runner._running_agent_sources["agent:main:feishu:group:oc_chat:omt_b"].platform = Platform.FEISHU
+    runner._running_agent_sources["agent:main:feishu:group:oc_chat:omt_b"].thread_id = "omt_b"
+    runner._running_agent_sources["agent:main:feishu:group:oc_chat:omt_b"].event_message_id = "om_b"
+    runner._running_agents["agent:main:feishu:group:oc_chat:omt_a"] = MagicMock()
+    runner._running_agents["agent:main:feishu:group:oc_chat:omt_b"] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.send.await_count == 2
+    sent_thread_ids = sorted(
+        call.kwargs["metadata"]["thread_id"]
+        for call in adapter.send.await_args_list
+    )
+    assert sent_thread_ids == ["omt_a", "omt_b"]
+    sent_reply_to = sorted(call.kwargs["reply_to"] for call in adapter.send.await_args_list)
+    assert sent_reply_to == ["om_a", "om_b"]
 
 
 @pytest.mark.asyncio
