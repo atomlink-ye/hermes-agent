@@ -5249,6 +5249,12 @@ class GatewayRunner:
             }
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
+            if (
+                event.source.platform == Platform.FEISHU
+                and event.source.thread_id
+                and event.message_id
+            ):
+                notify_data["message_id"] = event.message_id
             (_hermes_home / ".restart_notify.json").write_text(
                 json.dumps(notify_data)
             )
@@ -8137,6 +8143,7 @@ class GatewayRunner:
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
+            message_id = data.get("message_id")
 
             if not platform_str or not chat_id:
                 return
@@ -8151,9 +8158,11 @@ class GatewayRunner:
                 return
 
             metadata = {"thread_id": thread_id} if thread_id else None
+            reply_to = message_id if platform == Platform.FEISHU and thread_id and message_id else None
             await adapter.send(
                 chat_id,
                 "♻ Gateway restarted successfully. Your session continues.",
+                reply_to=reply_to,
                 metadata=metadata,
             )
             logger.info(
@@ -9607,21 +9616,47 @@ class GatewayRunner:
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_reply_to = _progress_reply_to
 
-        def _status_callback_sync(event_type: str, message: str) -> None:
+        async def _send_status_message(text: str) -> None:
+            if not _status_adapter:
+                return
+            await _status_adapter.send(
+                _status_chat_id,
+                text,
+                reply_to=_status_reply_to,
+                metadata=_status_thread_metadata,
+            )
+
+        def _schedule_status_message(text: str, *, label: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
             try:
-                asyncio.run_coroutine_threadsafe(
-                    _status_adapter.send(
-                        _status_chat_id,
-                        message,
-                        metadata=_status_thread_metadata,
-                    ),
-                    _loop_for_step,
-                )
+                try:
+                    running_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    running_loop = None
+
+                if running_loop is _loop_for_step:
+                    task = asyncio.create_task(_send_status_message(text))
+
+                    def _log_task_error(done_task: asyncio.Task) -> None:
+                        try:
+                            done_task.result()
+                        except Exception as _e:
+                            logger.debug("%s error: %s", label, _e)
+
+                    task.add_done_callback(_log_task_error)
+                else:
+                    asyncio.run_coroutine_threadsafe(
+                        _send_status_message(text),
+                        _loop_for_step,
+                    )
             except Exception as _e:
-                logger.debug("status_callback error (%s): %s", event_type, _e)
+                logger.debug("%s error: %s", label, _e)
+
+        def _status_callback_sync(event_type: str, message: str) -> None:
+            _schedule_status_message(message, label=f"status_callback ({event_type})")
 
         def run_sync():
             # The conditional re-assignment of `message` further below
@@ -9762,17 +9797,7 @@ class GatewayRunner:
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        _status_adapter.send(
-                            _status_chat_id,
-                            text,
-                            metadata=_status_thread_metadata,
-                        ),
-                        _loop_for_step,
-                    )
-                except Exception as _e:
-                    logger.debug("interim_assistant_callback error: %s", _e)
+                _schedule_status_message(text, label="interim_assistant_callback")
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
@@ -9862,19 +9887,7 @@ class GatewayRunner:
             _bg_review_pending_lock = threading.Lock()
 
             def _deliver_bg_review_message(message: str) -> None:
-                if not _status_adapter or not _run_still_current():
-                    return
-                try:
-                    asyncio.run_coroutine_threadsafe(
-                        _status_adapter.send(
-                            _status_chat_id,
-                            message,
-                            metadata=_status_thread_metadata,
-                        ),
-                        _loop_for_step,
-                    )
-                except Exception as _e:
-                    logger.debug("background_review_callback error: %s", _e)
+                _schedule_status_message(message, label="background_review_callback")
 
             def _release_bg_review_messages() -> None:
                 _bg_review_release.set()
@@ -10052,6 +10065,7 @@ class GatewayRunner:
                         _status_adapter.send(
                             _status_chat_id,
                             msg,
+                            reply_to=_status_reply_to,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -10364,6 +10378,7 @@ class GatewayRunner:
                     await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        reply_to=_status_reply_to,
                         metadata=_status_thread_metadata,
                     )
                 except Exception as _ne:
@@ -10458,6 +10473,7 @@ class GatewayRunner:
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
                                     f"You can continue waiting or use /reset.",
+                                    reply_to=_status_reply_to,
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
@@ -10685,6 +10701,7 @@ class GatewayRunner:
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
+                                reply_to=_status_reply_to,
                                 metadata=_status_thread_metadata,
                             )
                         except Exception as e:

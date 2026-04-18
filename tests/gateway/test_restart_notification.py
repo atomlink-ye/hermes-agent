@@ -113,6 +113,31 @@ async def test_restart_command_preserves_thread_id(tmp_path, monkeypatch):
     assert data["thread_id"] == "topic_7"
 
 
+@pytest.mark.asyncio
+async def test_feishu_restart_command_preserves_origin_message_id_for_thread_reply(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="oc_chat")
+    source.platform = Platform.FEISHU
+    source.thread_id = "omt_thread"
+
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="om_origin",
+    )
+
+    await runner._handle_restart_command(event)
+
+    data = json.loads((tmp_path / ".restart_notify.json").read_text())
+    assert data["thread_id"] == "omt_thread"
+    assert data["message_id"] == "om_origin"
+
+
 # ── _send_restart_notification ───────────────────────────────────────────
 
 

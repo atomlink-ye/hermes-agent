@@ -226,17 +226,8 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
-
-# Feishu reactions render as prominent badges, unlike Discord/Telegram's
-# small footer emoji — a success badge on every message would add noise, so
-# we only mark start (Typing) and failure (CrossMark); the reply itself is
-# the success signal.
-_FEISHU_REACTION_IN_PROGRESS = "Typing"
-_FEISHU_REACTION_FAILURE = "CrossMark"
-# Bound on the (message_id → reaction_id) handle cache. Happy-path entries
-# drain on completion; the cap is a safeguard against unbounded growth from
-# delete-failures, not a capacity plan.
-_FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
+_FEISHU_ACK_EMOJI = "OnIt"
+_FEISHU_DONE_EMOJI = "DONE"
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1381,6 +1372,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
         self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
+        self._ack_reaction_ids: Dict[str, str] = {}  # inbound message_id → ACK reaction_id
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
@@ -2587,28 +2579,46 @@ class FeishuAdapter(BasePlatformAdapter):
             self._chat_locks[chat_id] = lock
         return lock
 
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the receipt ACK for a DONE reaction after successful processing."""
+        message_id = event.message_id
+        if not message_id:
+            return
+        ack_reaction_id = self._ack_reaction_ids.pop(message_id, None)
+        if outcome != ProcessingOutcome.SUCCESS:
+            return
+        if ack_reaction_id:
+            await self._delete_reaction(message_id, ack_reaction_id, label="ack")
+        await self._add_done_reaction(message_id)
+
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
         """Dispatch a single event through the agent pipeline with per-chat serialization
-        before handing the event off to the agent.
+        and an ACK emoji reaction before processing starts.
 
-        Per-chat lock ensures messages in the same chat are processed one at a
-        time (matches openclaw's createChatQueue serial queue behaviour).
+        - Per-chat lock: ensures messages in the same chat are processed one at a time
+          (matches openclaw's createChatQueue serial queue behaviour).
+        - ACK indicator: adds an OnIt reaction to the triggering message before handing
+          off to the agent; the completion hook swaps it to DONE on success.
         """
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
             await self.handle_message(event)
 
-    # =========================================================================
-    # Processing status reactions
-    # =========================================================================
+    async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
+        """Add an ACK emoji reaction to signal the message was received."""
+        reaction_id = await self._create_reaction(message_id, _FEISHU_ACK_EMOJI, label="ack")
+        if reaction_id:
+            self._ack_reaction_ids[message_id] = reaction_id
+        return reaction_id
 
-    def _reactions_enabled(self) -> bool:
-        return os.getenv("FEISHU_REACTIONS", "true").strip().lower() not in ("false", "0", "no")
+    async def _add_done_reaction(self, message_id: str) -> Optional[str]:
+        """Add a DONE emoji reaction to signal the request completed successfully."""
+        return await self._create_reaction(message_id, _FEISHU_DONE_EMOJI, label="done")
 
-    async def _add_reaction(self, message_id: str, emoji_type: str) -> Optional[str]:
-        """Return the reaction_id on success, else None. The id is needed later for deletion."""
-        if not self._client or not message_id or not emoji_type:
+    async def _create_reaction(self, message_id: str, emoji_type: str, *, label: str) -> Optional[str]:
+        """Create a Feishu message reaction and return its reaction ID when available."""
+        if not self._client or not message_id:
             return None
         try:
             from lark_oapi.api.im.v1 import (
@@ -2630,8 +2640,9 @@ class FeishuAdapter(BasePlatformAdapter):
             if response and getattr(response, "success", lambda: False)():
                 data = getattr(response, "data", None)
                 return getattr(data, "reaction_id", None)
-            logger.debug(
-                "[Feishu] Add reaction %s on %s rejected: code=%s msg=%s",
+            logger.warning(
+                "[Feishu] Failed to add %s reaction (%s) to %s: code=%s msg=%s",
+                label,
                 emoji_type,
                 message_id,
                 getattr(response, "code", None),
@@ -2639,18 +2650,21 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception:
             logger.warning(
-                "[Feishu] Add reaction %s on %s raised",
+                "[Feishu] Failed to add %s reaction (%s) to %s",
+                label,
                 emoji_type,
                 message_id,
                 exc_info=True,
             )
         return None
 
-    async def _remove_reaction(self, message_id: str, reaction_id: str) -> bool:
+    async def _delete_reaction(self, message_id: str, reaction_id: str, *, label: str) -> bool:
+        """Delete a Feishu message reaction by reaction ID."""
         if not self._client or not message_id or not reaction_id:
             return False
         try:
             from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
+
             request = (
                 DeleteMessageReactionRequest.builder()
                 .message_id(message_id)
@@ -2660,8 +2674,9 @@ class FeishuAdapter(BasePlatformAdapter):
             response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
             if response and getattr(response, "success", lambda: False)():
                 return True
-            logger.debug(
-                "[Feishu] Remove reaction %s on %s rejected: code=%s msg=%s",
+            logger.warning(
+                "[Feishu] Failed to delete %s reaction %s from %s: code=%s msg=%s",
+                label,
                 reaction_id,
                 message_id,
                 getattr(response, "code", None),
@@ -2669,53 +2684,14 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception:
             logger.warning(
-                "[Feishu] Remove reaction %s on %s raised",
+                "[Feishu] Failed to delete %s reaction %s from %s",
+                label,
                 reaction_id,
                 message_id,
                 exc_info=True,
             )
         return False
 
-    def _remember_processing_reaction(self, message_id: str, reaction_id: str) -> None:
-        cache = self._pending_processing_reactions
-        cache[message_id] = reaction_id
-        cache.move_to_end(message_id)
-        while len(cache) > _FEISHU_PROCESSING_REACTION_CACHE_SIZE:
-            cache.popitem(last=False)
-
-    def _pop_processing_reaction(self, message_id: str) -> Optional[str]:
-        return self._pending_processing_reactions.pop(message_id, None)
-
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        if not self._reactions_enabled():
-            return
-        message_id = event.message_id
-        if not message_id or message_id in self._pending_processing_reactions:
-            return
-        reaction_id = await self._add_reaction(message_id, _FEISHU_REACTION_IN_PROGRESS)
-        if reaction_id:
-            self._remember_processing_reaction(message_id, reaction_id)
-
-    async def on_processing_complete(
-        self, event: MessageEvent, outcome: ProcessingOutcome
-    ) -> None:
-        if not self._reactions_enabled():
-            return
-        message_id = event.message_id
-        if not message_id:
-            return
-
-        start_reaction_id = self._pending_processing_reactions.get(message_id)
-        if start_reaction_id:
-            if not await self._remove_reaction(message_id, start_reaction_id):
-                # Don't stack a second badge on top of a Typing we couldn't
-                # remove — UI would read as both "working" and "done/failed"
-                # simultaneously. Keep the handle so LRU eventually evicts it.
-                return
-            self._pop_processing_reaction(message_id)
-
-        if outcome is ProcessingOutcome.FAILURE:
-            await self._add_reaction(message_id, _FEISHU_REACTION_FAILURE)
 
     # =========================================================================
     # Webhook server and security

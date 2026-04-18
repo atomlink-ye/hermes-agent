@@ -512,6 +512,31 @@ class BackgroundReviewAgent:
         }
 
 
+class SlowStillWorkingAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+        self._started_at = None
+
+    def get_activity_summary(self):
+        started_at = self._started_at or time.time()
+        return {
+            "api_call_count": 47,
+            "max_iterations": 90,
+            "current_tool": "delegate_task",
+            "last_activity_desc": "running: delegate_task",
+            "seconds_since_activity": max(0.0, time.time() - started_at),
+        }
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self._started_at = time.time()
+        time.sleep(0.12)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class VerboseAgent:
     """Agent that emits a tool call with args whose JSON exceeds 200 chars."""
     LONG_CODE = "x" * 300
@@ -545,6 +570,7 @@ async def _run_with_agent(
     chat_id="-1001",
     chat_type="group",
     thread_id="17585",
+    event_message_id=None,
 ):
     if config_data:
         import yaml
@@ -590,6 +616,7 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        event_message_id=event_message_id,
     )
     return adapter, result
 
@@ -804,6 +831,62 @@ async def test_run_agent_defers_background_review_notification_until_release(mon
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_feishu_background_review_replies_inside_thread_after_release(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BackgroundReviewAgent,
+        session_id="sess-bg-review-feishu-thread",
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt_thread",
+        event_message_id="om_origin",
+    )
+
+    assert result["final_response"] == "done"
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+    release = adapter._post_delivery_callbacks.pop(session_key)
+    release()
+    await asyncio.sleep(0)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "oc_chat",
+            "content": "💾 Skill 'prospect-scanner' created.",
+            "reply_to": "om_origin",
+            "metadata": {"thread_id": "omt_thread"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_feishu_still_working_replies_inside_thread(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SlowStillWorkingAgent,
+        session_id="sess-feishu-still-working-thread",
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt_thread",
+        event_message_id="om_origin",
+    )
+
+    assert result["final_response"] == "done"
+    assert any("Still working..." in call["content"] for call in adapter.sent)
+    still_working = next(call for call in adapter.sent if "Still working..." in call["content"])
+    assert still_working["reply_to"] == "om_origin"
+    assert still_working["metadata"] == {"thread_id": "omt_thread"}
+    assert "running: delegate_task" in still_working["content"]
 
 
 @pytest.mark.asyncio
