@@ -1694,15 +1694,21 @@ class GatewayRunner:
             source = running_sources.get(session_key)
             if source is None:
                 try:
+                    from gateway.session import SessionSource as _SessionSource
+
                     if getattr(self, "session_store", None) is not None:
                         self.session_store._ensure_loaded()
-                        entry = self.session_store._entries.get(session_key)
-                        source = getattr(entry, "origin", None) if entry else None
-                except Exception as e:
+                        entries = getattr(self.session_store, "_entries", None)
+                        if isinstance(entries, dict):
+                            entry = entries.get(session_key)
+                            origin = getattr(entry, "origin", None)
+                            if isinstance(origin, _SessionSource):
+                                source = origin
+                except Exception as exc:
                     logger.debug(
-                        "Failed to load session origin for shutdown notification %s: %s",
+                        "Shutdown notification session-store lookup failed for %s: %s",
                         session_key,
-                        e,
+                        exc,
                     )
             thread_id = None
 
@@ -4037,6 +4043,14 @@ class GatewayRunner:
         # under the same Feishu thread anchor.
         if getattr(event, "message_id", None):
             setattr(source, "event_message_id", event.message_id)
+
+        # Keep the live session-store origin fresh as well. Some restart/shutdown
+        # paths may need to fall back to session_store origin metadata when the
+        # transient _running_agent_sources entry is missing.
+        try:
+            session_entry.origin = source
+        except Exception:
+            pass
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (

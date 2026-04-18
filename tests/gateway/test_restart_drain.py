@@ -243,6 +243,28 @@ async def test_shutdown_notification_sends_one_message_per_feishu_topic_when_sou
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notification_uses_session_store_origin_when_running_source_missing():
+    """Fallback should use session_store origin so Feishu keeps reply anchoring."""
+    runner, adapter = make_restart_runner()
+    runner.adapters = {Platform.FEISHU: adapter}
+    adapter.send = AsyncMock(return_value=MagicMock(success=True, message_id="1"))
+    session_key = "agent:main:feishu:group:oc_chat:omt_thread"
+    source = make_restart_source(chat_id="oc_chat", chat_type="group")
+    source.platform = Platform.FEISHU
+    source.thread_id = "omt_thread"
+    source.event_message_id = "om_origin"
+    runner.session_store._entries = {session_key: MagicMock(origin=source)}
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once()
+    _, kwargs = adapter.send.call_args
+    assert kwargs["metadata"] == {"thread_id": "omt_thread"}
+    assert kwargs["reply_to"] == "om_origin"
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_skipped_when_no_active_agents():
     """No notification is sent when there are no active agents."""
     runner, adapter = make_restart_runner()
