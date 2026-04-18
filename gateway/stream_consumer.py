@@ -83,11 +83,13 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
+        reply_to: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        self.reply_to = reply_to
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -507,7 +509,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                reply_to=reply_to_id,
+                reply_to=reply_to_id or self.reply_to,
                 metadata=meta,
             )
             if result.success and result.message_id:
@@ -613,6 +615,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
+                    reply_to=last_message_id or self.reply_to,
                     metadata=self.metadata,
                 )
                 if result.success:
@@ -722,6 +725,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
+                reply_to=self.reply_to,
                 metadata=self.metadata,
             )
             # Note: do NOT set _already_sent = True here.
@@ -847,6 +851,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
+                    reply_to=self.reply_to,
                     metadata=self.metadata,
                 )
                 if result.success:

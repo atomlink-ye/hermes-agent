@@ -9090,11 +9090,15 @@ class GatewayRunner:
                         cursor=_effective_cursor,
                         buffer_only=_buffer_only,
                     )
+                    _stream_metadata = dict(_thread_metadata or {})
+                    if source.platform == Platform.FEISHU:
+                        _stream_metadata["_feishu_message_style"] = "interactive_card"
                     _stream_consumer = GatewayStreamConsumer(
                         adapter=_adapter,
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
-                        metadata=_thread_metadata,
+                        metadata=_stream_metadata or None,
+                        reply_to=event.message_id if source.platform == Platform.FEISHU and source.thread_id else None,
                     )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -9713,11 +9717,15 @@ class GatewayRunner:
                             cursor=_effective_cursor,
                             buffer_only=_buffer_only,
                         )
+                        _stream_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else {}
+                        if source.platform == Platform.FEISHU:
+                            _stream_metadata["_feishu_message_style"] = "interactive_card"
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=_stream_metadata or None,
+                            reply_to=event.message_id if source.platform == Platform.FEISHU and source.thread_id else None,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:

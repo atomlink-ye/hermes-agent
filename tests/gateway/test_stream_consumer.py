@@ -321,6 +321,35 @@ class TestSendOrEditMediaStripping:
         assert result is True
         adapter.edit_message.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_first_send_propagates_reply_to(self):
+        """Initial streamed send can anchor to an inbound message reply."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123", reply_to="om_parent")
+        result = await consumer._send_or_edit("Hello ▉")
+
+        assert result is True
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args.kwargs["reply_to"] == "om_parent"
+
+    @pytest.mark.asyncio
+    async def test_commentary_propagates_reply_to(self):
+        """Interim commentary should stay under the same parent reply."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_c"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123", reply_to="om_parent")
+        ok = await consumer._send_commentary("Checking the docs...")
+
+        assert ok is True
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args.kwargs["reply_to"] == "om_parent"
+
 
 # ── Integration: full stream run ─────────────────────────────────────────
 
