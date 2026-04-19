@@ -88,6 +88,7 @@ class ProcessSession:
     watcher_user_id: str = ""
     watcher_user_name: str = ""
     watcher_thread_id: str = ""
+    watcher_message_id: str = ""
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
     # Watch patterns — trigger agent notification when output matches any pattern
